@@ -158,8 +158,8 @@ class compute(threading.Thread):
     def simulate(self):
 
         for n in range(0,100):
-            if (not args.xvinit): xv = [np.random.uniform(conf.xLOW,conf.xHIGH),np.random.uniform(conf.vLOW,conf.vHIGH)]
-            else : xv = [args.xvinit[0],args.xvinit[1]]
+            if (type(args.xvinit)==list): xv = [args.xvinit[0],args.xvinit[1]]
+            else: xv = [np.random.uniform(conf.xLOW,conf.xHIGH),np.random.uniform(conf.vLOW,conf.vHIGH)]
 
             S = self.xv_to_S(xv)
             A = self.choosemove(self.S_to_cS(S))
@@ -257,7 +257,10 @@ class render():
         for hline in hlines:
             ax.axhline(y=hline,ls='--')
 
+        ax.set_xlabel('position x')
+        ax.set_ylabel('velocity v')
         self.plt = ax.plot([],[])
+
         self.line, = self.plt
 
 
@@ -288,7 +291,6 @@ class render():
         xs = [conf.xLOW+i/imax*(conf.xHIGH-conf.xLOW) for i in range(0,imax+1)]
         ys = list(map(lambda x: -0.5*math.sin(3*x),xs))
         for i in range(0,len(xs)-1): self.myCanvas.create_line(conf.scale*xs[i],conf.scale*ys[i],conf.scale*xs[i+1],conf.scale*ys[i+1],width=2,fill="black")
-
 
     def drawscene(self):
         self.myCanvas.create_line(conf.xLOW*conf.scale,-100,conf.xLOW*conf.scale,100,width=2,fill="black")
