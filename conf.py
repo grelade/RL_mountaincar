@@ -16,12 +16,15 @@ scaley=500
 scale=100
 
 # default path to store policies
-defaultpath = 'models/temp-model.pkl' 
+defaultpath = 'models/temp-model.pkl'
 
-# default values of parameters
-defaultalpha = 0.1
-defaultnoepisodes = 1000
-defaultgamma = 1
+# default values of SARSA algorithm parameters
+#defaultalpha = 0.1
+defaultalpha = 0.9
+#defaultnoepisodes = 1000
+#defaultgamma = 1
+defaultgamma = .95
 defaultepsilon = 0.1
 defaultinitq = 0
 defaultlambda = 0.1
+timethreshold = 5000

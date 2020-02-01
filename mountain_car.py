@@ -50,18 +50,21 @@ class compute(threading.Thread):
         # current trajectory
         self.trajx = np.array([])
         self.trajv = np.array([])
-
+        
+        self.weights = [0 for i in range(0,len(self.cSA))]
     def loadQhat(self,file):
         with open(file, 'rb') as f:
             data = pickle.loads(f.read())
             self.policy = data['policy']
             self.weights = data['weights']
             f.close()
+        print('loaded policy file from: ',file)
 
     def saveQhat(self,file):
         with open(file, 'wb') as f:
             pickle.dump({'policy':self.policy,'weights':self.weights}, f, pickle.HIGHEST_PROTOCOL)
             f.close()
+        print('policy file saved to: ',file)
 
 # load configure parameters passed by the argparse
     def setConfigure(self,args):
@@ -157,49 +160,62 @@ class compute(threading.Thread):
 
     def simulate(self):
 
-        for n in range(0,100):
+        n=args.noruns
+        i=1
+        while n != 0:
             if (type(args.xvinit)==list): xv = [args.xvinit[0],args.xvinit[1]]
             else: xv = [np.random.uniform(conf.xLOW,conf.xHIGH),np.random.uniform(conf.vLOW,conf.vHIGH)]
 
             S = self.xv_to_S(xv)
             A = self.choosemove(self.S_to_cS(S))
             #print(self.policy)
-            print(n,'; init [x,v]=',xv)
-
+            print(i,'; init [x,v]=',xv)
+            t = 0
             while not xv[0] == conf.xHIGH:
                 self.collecttrajectory(xv)
-                time.sleep(0.01)
+                time.sleep(args.lag)
                 #print(xv)
                 if self.stopevent.isSet(): return None
-                else: output = self.renderer.movecar(xv)
+                if not self.args.fast: self.renderer.movecar(xv)
                 R,xv_prime = env(xv,A)
                 S_prime = self.xv_to_S(xv_prime)
                 A_prime = self.choosemove(self.S_to_cS(S_prime))
                 xv = xv_prime
                 S = self.xv_to_S(xv)
                 A = A_prime
+                t+=1
+            print('reached the goal after t=%s' % t)
+            self.renderer.addsuccess(t)
             self.cleartrajectory()
+            n-=1
+            i+=1
 
     def sarsa(self):
         epsilon = conf.defaultepsilon
-        alpha = 1
+        alpha = conf.defaultalpha
         gamma = conf.defaultgamma
-        noepisodes = conf.defaultnoepisodes
+        time_th = conf.timethreshold if self.args.reset else -1 # set time threshold if the trajectory get stuck
+        #noepisodes = conf.defaultnoepisodes
 
-        self.weights = [100 for i in range(0,len(self.cSA))]
+        self.weights = [0 for i in range(0,len(self.cSA))]
         self.policy = self.greedy(epsilon)
 
-        for n in range(0,noepisodes):
+        print('running SARSA with epsilon=%s,alpha=%s,gamma=%s' % (epsilon,alpha,gamma))
+        n=args.noruns
+        j=1
+        while n != 0:
             xv = [np.random.uniform(conf.xLOW,conf.xHIGH),np.random.uniform(conf.vLOW,conf.vHIGH)]
             #xv = [0,0]
             S = self.xv_to_S(xv)
             A = self.choosemove(self.S_to_cS(S))
             self.policy = self.greedy(epsilon)
 
-            print(n)
+            print(j,'; init [x,v]=',xv)
             visits = [1 for i in range(0,len(self.cSA))]
             propagation = 0
-            while not xv[0] == conf.xHIGH:
+            countdown = time_th
+            time0=0
+            while not (xv[0] == conf.xHIGH or countdown == 0 ):
                 self.collecttrajectory(xv)
                 #print(xv)
                 #print(len(self.trajx),len(self.trajv))
@@ -209,7 +225,7 @@ class compute(threading.Thread):
                 #input()
                 #visits[self.SA_to_iSA([S,A])]+=1
                 if self.stopevent.isSet(): return None
-                else: output = self.renderer.movecar(xv)
+                if not self.args.fast: self.renderer.movecar(xv)
                 R,xv_prime = env(xv,A)
                 S_prime = self.xv_to_S(xv_prime)
                 self.policy = self.greedy(epsilon)
@@ -218,8 +234,16 @@ class compute(threading.Thread):
                 xv = xv_prime
                 S = self.xv_to_S(xv)
                 A = A_prime
-            #input()
+                countdown-=1
+                time0+=1
+            if (countdown==0):
+                print('trajectory got stuck after conf.timethreshold=%s iterations, moving on' % time_th)
+            else:
+                print('reached the goal after t=%s' % time0)
+            self.renderer.addsuccess(time0)
             self.cleartrajectory()
+            n-=1
+            j+=1
 
     def run(self):
         if self.args.mode == 'r':
@@ -227,7 +251,10 @@ class compute(threading.Thread):
             self.simulate()
         elif self.args.mode == 'f':
             self.model()
-            self.saveQhat(self.args.path)
+        elif self.args.mode == 'c':
+            self.loadQhat(self.args.path)
+            self.model()
+            #self.saveQhat(self.args.path)
 
 
 class render():
@@ -235,12 +262,37 @@ class render():
     def __init__(self,root):
         self.root = root
 
+        self.mainFrame = tkinter.Frame(self.root,bg="white")
+        self.mainFrame.pack(side="top") # position the mainFrame
 
-        self.myCanvas = tkinter.Canvas(self.root, bg="white", height=conf.scaley, width=conf.scalex)
-        self.myCanvas.xview_scroll(250,"pages")
-        self.myCanvas.yview_scroll(250,"pages")
-        self.myCanvas.pack(side='top')
+        # simulation frame
+        self.simFrame = tkinter.Frame(self.mainFrame)
 
+        # myCanvas + buttonFrame -> simFrame
+        self.myCanvas = tkinter.Canvas(self.simFrame, bg="white", height=conf.scaley, width=conf.scalex)
+        self.myCanvas.xview_scroll(300,"pages")
+        self.myCanvas.yview_scroll(300,"pages")
+        self.myCanvas.pack(side="top")
+
+        self.buttonFrame = tkinter.Frame(self.simFrame, bg="white")
+        self.buttonSave = tkinter.Button(self.buttonFrame,text="save current policy",command=self.savepolicy,state={'r':'disabled','f':'normal','c':'normal'}[args.mode])
+        self.buttonSave.pack(side="left")
+        self.buttonFrame.pack(side="top")
+
+        # success time plot
+        self.fig3 = Figure()
+        self.ax3 = self.fig3.add_subplot(111)
+        self.ax3.set_ylim(0,200)
+        self.ax3.set_xlim(0,50)
+
+        self.plt3 = self.ax3.plot([],[])
+        self.ax3.set_xlabel('#')
+        self.ax3.set_ylabel('success time')
+        self.line3, = self.plt3
+
+        self.figCanvas3 = FigureCanvasTkAgg(self.fig3,master=self.mainFrame)
+
+        # phase space
         self.fig = Figure()
         ax = self.fig.add_subplot(111)
 
@@ -263,19 +315,30 @@ class render():
 
         self.line, = self.plt
 
+        self.figCanvas = FigureCanvasTkAgg(self.fig,master=self.mainFrame)
 
-        self.figCanvas = FigureCanvasTkAgg(self.fig,master=self.root)
-        #self.myCanvas.show()
 
-        self.figCanvas.get_tk_widget().pack(side='bottom')
-        #self.frame.pack()
+        # weight plot
+        self.fig2 = Figure()
+        self.ax2 = self.fig2.add_subplot(111)
+        self.ax2.set_ylim(-5,5)
+        self.ax2.set_xlim(0,108)
 
-        self.buttonFrame = tkinter.Frame(self.root, bg="white")
-        # self.buttonDraw = tkinter.Button(self.buttonFrame,text="drawtrajectory()", command=self.drawtrajectory)
-        # self.buttonDraw.pack(side="left")
-        self.buttonSave = tkinter.Button(self.buttonFrame,text="savePolicy()",command=self.savepolicy)
-        self.buttonSave.pack(side="left")
-        self.buttonFrame.pack()
+        self.plt2 = self.ax2.plot([],[])
+        self.ax2.set_xlabel('state-action')
+        self.ax2.set_ylabel('weight')
+        self.line2, = self.plt2
+
+        self.figCanvas2 = FigureCanvasTkAgg(self.fig2,master=self.mainFrame)
+
+
+        # positioning of plots
+
+        self.simFrame.grid(column=0,row=0)
+        self.figCanvas.get_tk_widget().grid(column=0,row=1) # phase space plot
+        self.figCanvas3.get_tk_widget().grid(column=1,row=0) # success time plot
+        self.figCanvas2.get_tk_widget().grid(column=1,row=1) # weight plot
+
 
     def setConfigure(self,args):
         self.args = args
@@ -284,7 +347,7 @@ class render():
         self.computer = computer
 
     def savepolicy(self):
-        self.computer.saveQhat(self.args.defaultpath)
+        self.computer.saveQhat(self.args.path)
 
     def drawground(self):
         imax = 50
@@ -302,16 +365,49 @@ class render():
 
     def drawcar(self):
         self.car = self.myCanvas.create_oval(-10,-10,+10,+10,fill="black")
-        print(self.myCanvas.coords(self.car))
+        #print(self.myCanvas.coords(self.car))
 
     def drawtrajectory(self):
         self.line.set_ydata(self.computer.trajv)
         self.line.set_xdata(self.computer.trajx)
         self.figCanvas.draw()
 
+    def drawweights(self):
+        if self.computer.weights:
+            mean = np.mean(self.computer.weights)
+            std = np.std(self.computer.weights)
+            title = 'weight mean='+str(mean)[:7]+'; std='+str(std)[:7]
+            self.ax2.set_title(title)
+            self.line2.set_ydata((self.computer.weights - mean) / std)
+            self.line2.set_xdata([i for i in range(len(self.computer.weights))])
+            self.figCanvas2.draw()
+
+    def addsuccess(self,t):
+        #print(t)
+        X = self.line3.get_xdata().copy()
+        Y = self.line3.get_ydata().copy()
+        #print(X,Y)
+        Y = np.append(Y,t)
+        X = np.append(X,X[-1]+1) if not len(X) == 0 else np.append(X,0)
+        #print(X,Y)
+        self.ax3.set_ylim(0,1.1*max(Y))
+        xmax = self.ax3.get_xlim()[1]
+        if max(X)> xmax: self.ax3.set_xlim(0,1.8*xmax)
+
+        mean,std = [np.mean(Y), np.std(Y)]
+        #std = np.std(Y)
+        title = 'time mean='+str(mean)[:7]+'; std='+str(std)[:7]
+        self.ax3.set_title(title)
+        self.line3.set_xdata(X)
+        self.line3.set_ydata(Y)
+
+    def drawsuccess(self):
+        self.figCanvas3.draw()
+
     def movecar(self,xv):
         carcoords = self.myCanvas.coords(self.car)
-
+        carcoords[0]+=10
+        carcoords[1]+=10
         self.myCanvas.move(self.car,conf.scale*xv[0]-carcoords[0],-0.5*conf.scale*math.sin(3*xv[0])-carcoords[1])
 
     def clearCanvas(self):
@@ -324,27 +420,37 @@ class render():
 if __name__ == "__main__":
 
     def refresh():
+        #renderer.drawtrajectory()
+        #root.after(10,refresh)
         try:
-            renderer.drawtrajectory()
+            if not args.fast: renderer.drawtrajectory()
+            renderer.drawweights()
+            renderer.drawsuccess()
             root.after(10,refresh)
-        except :
-            print('refresh warning')
+        except ValueError:
+            #print('refresh warning')
             root.after(10,refresh)
 
     def close_window():
         stopevent.set()
-        root.destroy()
+        root.quit()
+
 
     parser = argparse.ArgumentParser(prog='mountain_car',description='reinforce-learn the mountain car')
 
     parser.add_argument('-p','--path',type=str,default=conf.defaultpath,help='specify path where load/save model data')
-    parser.add_argument('-m','--mode',type=str,default='r',help='specify the mode; r - run a model or f - find a model')
-    parser.add_argument('-i','--xvinit',type=float, default=False, nargs=2,help='specify initial position ('+str(conf.xLOW)+','+str(conf.xHIGH)+') and speed ('+str(conf.vLOW)+','+str(conf.vHIGH)+')')
+    parser.add_argument('-m','--mode',type=str,default='r',help='specify the mode; r - run a model or f - look for a model from scratch, c = continue looking for a model')
+    parser.add_argument('-i','--xvinit',type=float, default=False, nargs=2,help='specify initial position ('+str(conf.xLOW)+','+str(conf.xHIGH)+') and velocity ('+str(conf.vLOW)+','+str(conf.vHIGH)+')')
+    parser.add_argument('-n','--noruns',type=int,default=-1,help='specify number of runs; -1 means infinite')
+    parser.add_argument('-r','--reset',default=False,const=True,action='store_const',help='reset when trajectory is stuck during learning')
+    parser.add_argument('-t','--lag',type=float,default=0.001,help='time lag in the run mode')
+    parser.add_argument('-f','--fast',default=False,const=True,action='store_const',help='fast mode disabling trajectory tracking')
     args = parser.parse_args()
 
     print('model path:',args.path)
-    print('mode:',{'r':'run the model','f':'find the model'}[args.mode])
-    print('initial values:',{bool:'random',list:'fixed'}[type(args.xvinit)])
+    print('mode:',{'r':'run a model','f':'find a model from scratch','c':'continue looking for a model'}[args.mode])
+    print('number of runs:',args.noruns)
+    #print('initial position and velocity [x,v]:',{bool:'random',list:'fixed'}[type(args.xvinit)])
 
 
 
@@ -353,6 +459,7 @@ if __name__ == "__main__":
     #renderer
     root = tkinter.Tk()
     renderer = render(root)
+    renderer.setConfigure(args)
     renderer.drawscene()
 
 
